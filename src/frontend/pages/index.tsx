@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { io } from 'socket.io-client';
+import React, { useState, useEffect, useRef } from 'react';
+import { io, Socket } from 'socket.io-client';
 
 // Define types
 interface MeetingResponse {
@@ -8,34 +8,72 @@ interface MeetingResponse {
   status: string;
 }
 
-interface WordUpdate {
+interface FacilitationConfig {
+  meetingTarget: string;
+  targetState: 'on_topic' | 'off_topic' | 'neutral';
+  facilitationFeedback: string;
+}
+
+interface MeetingUpdate {
   lastWord: string;
+  currentSentence?: string;
+  facilitationConfig?: FacilitationConfig;
 }
 
 export default function Home() {
   const [meetingUrl, setMeetingUrl] = useState('');
   const [meetingId, setMeetingId] = useState('');
   const [lastWord, setLastWord] = useState('');
+  const [currentSentence, setCurrentSentence] = useState('');
+  const [facilitationConfig, setFacilitationConfig] = useState<FacilitationConfig>({
+    meetingTarget: '',
+    targetState: 'neutral',
+    facilitationFeedback: 'Waiting for conversation to begin...'
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Socket reference to prevent recreation on each render
+  const socketRef = useRef<Socket | null>(null);
+
   // Initialize socket connection
   useEffect(() => {
-    const socket = io('http://localhost:3000');
+    if (!socketRef.current) {
+      socketRef.current = io('http://localhost:3000');
+    }
     
-    // Listen for word updates
-    socket.on('connect', () => {
+    const socket = socketRef.current;
+    
+    // Listen for updates
+    const handleConnect = () => {
       console.log('Socket connected');
-      
-      if (meetingId) {
-        socket.on(`meeting:${meetingId}:word`, (data: WordUpdate) => {
-          setLastWord(data.lastWord);
-        });
-      }
-    });
-
+    };
+    
+    const handleUpdate = (data: MeetingUpdate) => {
+      console.log('Received transcript update:', data);
+      if (data.lastWord) setLastWord(data.lastWord);
+      if (data.currentSentence) setCurrentSentence(data.currentSentence);
+      if (data.facilitationConfig) setFacilitationConfig(data.facilitationConfig);
+    };
+    
+    const handleFacilitationUpdate = (data: { facilitationConfig: FacilitationConfig }) => {
+      console.log('Received facilitation update:', data);
+      if (data.facilitationConfig) setFacilitationConfig(data.facilitationConfig);
+    };
+    
+    socket.on('connect', handleConnect);
+    
+    if (meetingId) {
+      socket.on(`meeting:${meetingId}:update`, handleUpdate);
+      socket.on(`meeting:${meetingId}:facilitation`, handleFacilitationUpdate);
+    }
+    
     return () => {
-      socket.disconnect();
+      socket.off('connect', handleConnect);
+      if (meetingId) {
+        socket.off(`meeting:${meetingId}:update`, handleUpdate);
+        socket.off(`meeting:${meetingId}:facilitation`, handleFacilitationUpdate);
+      }
     };
   }, [meetingId]);
 
@@ -47,6 +85,9 @@ export default function Home() {
       setError('Please enter a meeting URL');
       return;
     }
+    
+    // Default meeting target
+    const meetingTarget = 'Talk only about apples';
 
     try {
       setIsLoading(true);
@@ -59,7 +100,10 @@ export default function Home() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ meetingUrl }),
+        body: JSON.stringify({ 
+          meetingUrl,
+          meetingTarget: facilitationConfig.meetingTarget 
+        }),
       });
 
       if (!response.ok) {
@@ -77,74 +121,173 @@ export default function Home() {
   };
 
   return (
-    <div style={{ maxWidth: '600px', margin: '0 auto', padding: '20px' }}>
-      <h1>Meeting Transcript App</h1>
+    <div style={{ 
+      backgroundColor: '#363953', 
+      minHeight: '100vh',
+      color: 'white',
+      fontFamily: 'system-ui, sans-serif'
+    }}>
+      {/* Header */}
+      <header style={{ 
+        padding: '1rem', 
+        borderBottom: '1px solid rgba(255,255,255,0.1)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        maxWidth: '800px',
+        margin: '0 auto'
+      }}>
+        <img 
+          src="/images/workpath-logo.png" 
+          alt="Workpath Logo" 
+          style={{ height: '20px' }} 
+        />
+        <h1 style={{ margin: 0, fontSize: '1.5rem' }}>AI Room Proof of Technology</h1>
+      </header>
       
-      <div style={{ marginBottom: '20px' }}>
-        <form onSubmit={handleCreateMeeting}>
-          <div style={{ marginBottom: '10px' }}>
-            <label htmlFor="meeting-url" style={{ display: 'block', marginBottom: '5px' }}>
-              Meeting URL
-            </label>
-            <input
-              id="meeting-url"
-              type="text"
-              placeholder="https://zoom.us/j/123456789"
-              value={meetingUrl}
-              onChange={(e) => setMeetingUrl(e.target.value)}
-              disabled={isLoading || !!meetingId}
-              style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ccc' }}
-            />
-          </div>
+      <div style={{ maxWidth: '800px', margin: '0 auto', padding: '2rem' }}>
+        <h1 style={{ marginBottom: '2rem', fontWeight: 'bold', fontSize: '2rem' }}>Transcript Feedback Test</h1>
+      
+      {!meetingId ? (
+        <div style={{ marginBottom: '2rem' }}>
+          <form onSubmit={handleCreateMeeting}>
+            <div style={{ marginBottom: '1rem' }}>
+              <label htmlFor="meeting-url" style={{ display: 'block', marginBottom: '0.5rem', color: 'rgba(255,255,255,0.8)' }}>
+                Connect your call
+              </label>
+              <input
+                id="meeting-url"
+                type="text"
+                placeholder="Your call url (Teams, Zoom or Google Meet)"
+                value={meetingUrl}
+                onChange={(e) => setMeetingUrl(e.target.value)}
+                disabled={isLoading || !!meetingId}
+                style={{ 
+                  width: '100%', 
+                  padding: '0.75rem', 
+                  borderRadius: '0.375rem', 
+                  border: '1px solid rgba(255,255,255,0.2)',
+                  backgroundColor: 'rgba(255,255,255,0.05)',
+                  color: 'white'
+                }}
+              />
+            </div>
+            
+            <div style={{ marginBottom: '1rem' }}>
+              <label htmlFor="meeting-target" style={{ display: 'block', marginBottom: '0.5rem', color: 'rgba(255,255,255,0.8)' }}>
+                Meeting Target
+              </label>
+              <input
+                id="meeting-target"
+                type="text"
+                value={facilitationConfig.meetingTarget}
+                onChange={(e) => setFacilitationConfig({...facilitationConfig, meetingTarget: e.target.value})}
+                disabled={isLoading || !!meetingId}
+                style={{ 
+                  width: '100%', 
+                  padding: '0.75rem', 
+                  borderRadius: '0.375rem', 
+                  border: '1px solid rgba(255,255,255,0.2)',
+                  backgroundColor: 'rgba(255,255,255,0.05)',
+                  color: 'white'
+                }}
+              />
+            </div>
           
-          {!meetingId && (
-            <button 
-              type="submit" 
-              disabled={isLoading}
-              style={{ 
-                padding: '8px 16px', 
-                backgroundColor: '#0070f3', 
-                color: 'white', 
-                border: 'none', 
-                borderRadius: '4px', 
-                cursor: 'pointer' 
-              }}
-            >
-              {isLoading ? 'Creating...' : 'Create Meeting'}
-            </button>
-          )}
+          <button 
+            type="submit" 
+            disabled={isLoading}
+            style={{ 
+              padding: '0.75rem 1.5rem', 
+              backgroundColor: '#FFDA44', 
+              color: '#363953', 
+              border: 'none', 
+              borderRadius: '0.375rem', 
+              cursor: 'pointer',
+              fontWeight: 'bold',
+              fontSize: '1rem'
+            }}
+          >
+            {isLoading ? 'Creating...' : 'Connect'}
+          </button>
           
           {error && (
-            <p style={{ color: 'red', marginTop: '10px' }}>{error}</p>
+            <p style={{ color: '#ff6b6b', marginTop: '1rem' }}>{error}</p>
           )}
         </form>
       </div>
+      ) : null}
       
       {meetingId && (
-        <div style={{ border: '1px solid #eaeaea', borderRadius: '8px', padding: '20px' }}>
-          <h2>Meeting Transcript</h2>
-          <p>Meeting ID: {meetingId}</p>
-          
-          <div style={{ marginTop: '20px' }}>
-            <h3>Last Word</h3>
+        <div style={{ 
+          borderRadius: '0.5rem', 
+          padding: '1.5rem',
+          backgroundColor: 'rgba(255,255,255,0.05)',
+          border: '1px solid rgba(255,255,255,0.1)'
+        }}>
+          {/* Meeting Target with Status */}
+          <div style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'space-between',
+            marginBottom: '1.5rem',
+            padding: '1rem',
+            borderRadius: '0.375rem',
+            backgroundColor: 'rgba(255,255,255,0.05)'
+          }}>
+            <div>
+              <h3 style={{ margin: 0, marginBottom: '0.5rem', color: 'rgba(255,255,255,0.7)' }}>Meeting target</h3>
+              <p style={{ margin: 0, fontSize: '1.25rem', fontWeight: 'bold' }}>{facilitationConfig.meetingTarget}</p>
+            </div>
             <div style={{ 
-              backgroundColor: '#f0f0f0', 
-              padding: '20px', 
-              borderRadius: '4px',
-              minHeight: '60px',
+              width: '40px', 
+              height: '40px', 
+              borderRadius: '50%', 
+              backgroundColor: '#ffffffaa',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center'
+              justifyContent: 'center',
+              color: 'white'
             }}>
-              {lastWord ? (
-                <p style={{ fontSize: '24px', fontWeight: 'bold' }}>{lastWord}</p>
+              {facilitationConfig.targetState === 'on_topic' ? '✅' : 
+               facilitationConfig.targetState === 'off_topic' ? '👀' : 
+               '🐢'}
+            </div>
+          </div>
+          
+          {/* Current Sentence */}
+          <div style={{ marginBottom: '1.5rem' }}>
+            <h3 style={{ margin: 0, marginBottom: '0.5rem', color: 'rgba(255,255,255,0.7)' }}>Current Speech</h3>
+            <div style={{ 
+              backgroundColor: 'rgba(255,255,255,0.1)', 
+              padding: '1rem', 
+              borderRadius: '0.375rem',
+              minHeight: '60px',
+            }}>
+              {currentSentence ? (
+                <p style={{ margin: 0, fontSize: '1.125rem' }}>{currentSentence}</p>
               ) : (
-                <p style={{ color: '#666' }}>Waiting for transcript...</p>
+                <p style={{ margin: 0, color: 'rgba(255,255,255,0.5)' }}>Waiting for transcript...</p>
               )}
+            </div>
+          </div>
+          
+          {/* Facilitation Feedback */}
+          <div>
+            <h3 style={{ margin: 0, marginBottom: '0.5rem', color: 'rgba(255,255,255,0.7)' }}>Facilitation Feedback</h3>
+            <div style={{ 
+              backgroundColor: 'rgba(255,255,255,0.1)', 
+              padding: '1rem', 
+              borderRadius: '0.375rem',
+              minHeight: '60px',
+              borderLeft: '4px solid #FFDA44'
+            }}>
+              <p style={{ margin: 0, fontSize: '1.125rem' }}>{facilitationConfig.facilitationFeedback}</p>
             </div>
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

@@ -10,7 +10,7 @@ const meetingController = {
    */
   createMeeting: async (req: Request, res: Response) => {
     try {
-      const { meetingUrl } = req.body;
+      const { meetingUrl, meetingTarget = 'Talk only about apples' } = req.body;
       
       if (!meetingUrl) {
         return res.status(400).json({ error: 'Meeting URL is required' });
@@ -81,14 +81,29 @@ const meetingController = {
       console.log('Headers:', JSON.stringify(response.headers));
       console.log('Data:', JSON.stringify(response.data));
       
-      // Store meeting data in Redis
+      // Store meeting info in Redis
       await redisClient.hset(
         `meeting:${meetingId}`,
-        'meetingUrl', meetingUrl,
-        'recallBotId', response.data.id,
-        'createdAt', new Date().toISOString(),
-        'lastWord', '',
-        'status', 'active'
+        {
+          meetingUrl,
+          meetingTarget,
+          recallBotId: response.data.id,
+          status: 'active',
+          createdAt: new Date().toISOString()
+        }
+      );
+      
+      // Initialize facilitation config
+      const facilitationConfig = {
+        meetingTarget,
+        targetState: 'neutral',
+        facilitationFeedback: 'Waiting for conversation to begin...'
+      };
+      
+      await redisClient.hset(
+        `meeting:${meetingId}`,
+        'facilitationConfig',
+        JSON.stringify(facilitationConfig)
       );
       
       return res.status(201).json({

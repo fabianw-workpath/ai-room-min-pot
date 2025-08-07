@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import { redisClient, redisPubSub } from '../../config/redis';
 import { io } from '../../server';
+import { analyzeTranscript } from '../../services/openaiService';
+import { FacilitationConfig, TranscriptSegment } from '../../types/facilitation';
 
 // Type definitions for webhook payload
 interface Word {
@@ -74,6 +76,10 @@ const webhookController = {
           const lastWord = words[words.length - 1].text;
           console.log('Last Word:', lastWord);
           
+          // Reconstruct the full sentence from words
+          const sentence = words.map(word => word.text).join(' ');
+          console.log('Full Sentence:', sentence);
+          
           // Get the bot ID to identify the meeting
           const botId = payload.data.bot.id;
           console.log('Bot ID:', botId);
@@ -98,15 +104,78 @@ const webhookController = {
             await redisClient.hset(`meeting:${meetingId}`, 'lastWord', lastWord);
             console.log('Updated Redis with last word:', lastWord);
             
-            // Publish the update to Redis pub/sub
+            // Store the sentence in the transcript list
+            const timestamp = Date.now();
+            const transcriptSegment: TranscriptSegment = {
+              text: sentence,
+              timestamp,
+              speaker: payload.data.data.participant?.name || 'Unknown'
+            };
+            
+            // Add to transcript list in Redis (keep only last 10 segments for simplicity)
+            await redisClient.lpush(`meeting:${meetingId}:transcript`, JSON.stringify(transcriptSegment));
+            await redisClient.ltrim(`meeting:${meetingId}:transcript`, 0, 9);
+            console.log('Added sentence to transcript history');
+            
+            // Immediately publish the update to Redis pub/sub and emit to clients
             await redisPubSub.publish(
               `meeting:${meetingId}:updates`,
               JSON.stringify({ lastWord, timestamp: new Date().toISOString() })
             );
             
-            // Emit the update to connected clients via Socket.io
-            io.emit(`meeting:${meetingId}:word`, { lastWord });
-            console.log('Emitted Socket.io event:', `meeting:${meetingId}:word`, { lastWord });
+            // Get the current facilitation config
+            const facilitationConfigStr = await redisClient.hget(`meeting:${meetingId}`, 'facilitationConfig');
+            const facilitationConfig = facilitationConfigStr ? JSON.parse(facilitationConfigStr) : null;
+            
+            // Immediately emit the transcript update to connected clients via Socket.io
+            io.emit(`meeting:${meetingId}:update`, { 
+              lastWord,
+              currentSentence: sentence,
+              facilitationConfig
+            });
+            console.log('Immediately emitted transcript update');
+            
+            // Now start the LLM analysis in the background (non-blocking)
+            // Get meeting target from Redis
+            const meetingTarget = await redisClient.hget(`meeting:${meetingId}`, 'meetingTarget') || 'Talk only about apples';
+            
+            // Get last 2 transcript segments for analysis
+            const transcriptHistory = await redisClient.lrange(`meeting:${meetingId}:transcript`, 0, 1);
+            const transcriptSegments = transcriptHistory.map(item => JSON.parse(item));
+            
+            // Run analysis in the background
+            (async () => {
+              try {
+                // Analyze transcript with OpenAI
+                console.log('Analyzing transcript with OpenAI in background...');
+                const analysis = await analyzeTranscript({
+                  meetingTarget,
+                  transcript: transcriptSegments
+                });
+                
+                // Update facilitation config in Redis
+                const facilitationConfigData: FacilitationConfig = {
+                  meetingTarget,
+                  targetState: transcriptSegments.length < 1 ? 'neutral' : (analysis.isOnTopic ? 'on_topic' : 'off_topic'),
+                  facilitationFeedback: analysis.feedback
+                };
+                
+                await redisClient.hset(
+                  `meeting:${meetingId}`, 
+                  'facilitationConfig', 
+                  JSON.stringify(facilitationConfigData)
+                );
+                
+                console.log('Updated facilitation config:', facilitationConfigData);
+                
+                // Emit the facilitation update to connected clients
+                io.emit(`meeting:${meetingId}:facilitation`, { facilitationConfig: facilitationConfigData });
+                console.log('Emitted facilitation update');
+              } catch (analysisError) {
+                console.error('Error analyzing transcript:', analysisError);
+              }
+            })();
+            console.log('Emitted Socket.io event:', `meeting:${meetingId}:update`);
           } else {
             console.warn('No matching meeting found for bot ID:', botId);
           }
