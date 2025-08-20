@@ -14,6 +14,7 @@ A minimal dockerized application that gets transcripts from meetings using the R
 - Frontend: TypeScript with Shadcn UI
 - Backend: Node.js with Express
 - Database: Redis
+ - Persistence: AOF
 - Containerization: Docker
 
 ## Getting Started

@@ -42,7 +42,8 @@ const meetingController = {
               events: ['transcript.data', 'transcript.partial_data']
             }
           ]
-        }
+        },
+        "bot_name": "AI Room"
       };
       
       const headers = {

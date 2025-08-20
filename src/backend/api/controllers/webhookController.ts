@@ -90,10 +90,19 @@ const webhookController = {
           let meetingId = null;
           
           for (const key of meetingKeys) {
-            const recallBotId = await redisClient.hget(key, 'recallBotId');
-            if (recallBotId === botId) {
-              meetingId = key.split(':')[1];
-              break;
+            // Skip transcript keys which are lists, not hashes
+            if (key.includes(':transcript')) continue;
+            
+            try {
+              const recallBotId = await redisClient.hget(key, 'recallBotId');
+              if (recallBotId === botId) {
+                meetingId = key.split(':')[1];
+                break;
+              }
+            } catch (keyError: any) {
+              console.warn(`Error accessing key ${key}:`, keyError.message);
+              // Continue to next key if there's an error with this one
+              continue;
             }
           }
           
